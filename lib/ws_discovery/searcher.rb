@@ -2,7 +2,7 @@ require_relative 'multicast_connection'
 require_relative 'response'
 require 'semantic_logger'
 require 'builder'
-require 'uuid'
+require 'securerandom'
 
 class WSDiscovery::Searcher < WSDiscovery::MulticastConnection
   include SemanticLogger::Loggable
@@ -78,7 +78,7 @@ class WSDiscovery::Searcher < WSDiscovery::MulticastConnection
     Builder::XmlMarkup.new.s(:Envelope, namespaces) do |xml|
       xml.s(:Header) do |xml|
         xml.a(:Action, 'http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe')
-        xml.a(:MessageID, "uuid:#{UUID.generate}")
+        xml.a(:MessageID, "uuid:#{SecureRandom.uuid}")
         xml.a(:To, 'urn:schemas-xmlsoap-org:ws:2005:04:discovery')
       end
 
