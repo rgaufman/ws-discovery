@@ -1,5 +1,4 @@
 require_relative 'ws_discovery/core_ext/socket_patch'
-require 'eventmachine'
 
 require_relative 'ws_discovery/error'
 require_relative 'ws_discovery/network_constants'
@@ -14,60 +13,44 @@ module WSDiscovery
   # build and send the search request, then receives the responses.  The search
   # will stop after +response_wait_time+.
   #
+  # This used to run an EventMachine reactor for the duration of the search, which
+  # was this gem's only reason to depend on EventMachine. A probe is one datagram
+  # out and N datagrams back inside a fixed window, so an IO.select loop expresses
+  # it directly -- and, unlike the reactor, it does not install process-wide INT /
+  # TERM / HUP handlers. The old code needed those to stop the reactor, which meant
+  # every search silently replaced its host application's signal handlers and never
+  # put them back.
+  #
   # @param [Hash] options The options for the probe.
   # @option options [Hash<String>] :env_namespaces Additional envelope namespaces.
   # @option options [Hash<String>] :type_attributes Type attributes.
   # @option options [String] :types Types.
   # @option options [Hash<String>] :scope_attributes Scope attributes.
   # @option options [String] :scopes Scopes.
-  # @return [Array<WSDiscovery::Response>,WSDiscovery::Searcher] Returns an
-  #   Array of probe responses. If the reactor is already running this will return
-  #   a WSDiscovery::Searcher which will make its accessors available so you can
-  #   get responses in real time.
+  # @option options [Numeric] :response_wait_time Seconds to collect responses for.
+  # @return [Array<WSDiscovery::Response>] The probe responses, in arrival order.
   def self.search(options={})
     response_wait_time = options[:response_wait_time] || DEFAULT_WAIT_TIME
     responses = []
 
-    multicast_searcher = proc do
-      EM.open_datagram_socket('0.0.0.0', 0, WSDiscovery::Searcher, options)
+    searcher = WSDiscovery::Searcher.new(options)
+    searcher.send_probe
+
+    # Monotonic, so an NTP correction mid-search cannot stretch or collapse the
+    # window. The deadline is absolute rather than per-datagram, so a slow device
+    # still gets counted as long as it answers inside the window.
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + response_wait_time
+
+    loop do
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      break if remaining <= 0
+      break unless IO.select([searcher.socket], nil, nil, remaining) # nil == window expired
+
+      responses << searcher.receive_response
     end
 
-    if EM.reactor_running?
-      return multicast_searcher.call
-    else
-      EM.run do
-        ms = multicast_searcher.call
-
-        ms.discovery_responses.subscribe do |notification|
-          responses << notification
-        end
-
-        EM.add_timer(response_wait_time) { EM.stop }
-        trap_signals
-      end
-    end
-
-    responses.flatten
-  end
-
-  private
-
-  # Traps INT, TERM, and HUP signals and stops the reactor.
-  def self.trap_signals
-    trap('INT') do
-      EM.stop
-    rescue RuntimeError => e
-      # Already stopped
-      raise unless e.message.include?('eventmachine not initialized')
-    end
-
-    trap('TERM') do
-      EM.stop
-    rescue RuntimeError => e
-      # Already stopped
-      raise unless e.message.include?('eventmachine not initialized')
-    end
-
-    trap('HUP') { EM.stop } if RUBY_PLATFORM !~ /mswin|mingw/
+    responses
+  ensure
+    searcher&.close
   end
 end

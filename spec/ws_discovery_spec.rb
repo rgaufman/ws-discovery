@@ -5,39 +5,49 @@ describe WSDiscovery do
   subject { WSDiscovery }
 
   describe '.search' do
-    let(:multicast_searcher) do
-      searcher = double "WSDiscovery::Searcher"
-      allow(searcher).to receive_message_chain(:discovery_responses, :subscribe).and_yield(%w[one two])
+    let(:searcher) do
+      instance_double WSDiscovery::Searcher, socket: socket, send_probe: 100, close: nil
+    end
+    let(:socket) { instance_double UDPSocket }
 
-      searcher
+    before { allow(WSDiscovery::Searcher).to receive(:new).and_return(searcher) }
+
+    it "sends one probe and collects every response that arrives in the window" do
+      responses = %w[one two]
+      allow(IO).to receive(:select).and_return([socket], [socket], nil)
+      allow(searcher).to receive(:receive_response).and_return(*responses)
+
+      expect(searcher).to receive(:send_probe).once
+
+      expect(subject.search).to eql responses
     end
 
-    before do
-      allow(EM).to receive(:run).and_yield
-      allow(EM).to receive(:add_timer)
-      allow(EM).to receive(:open_datagram_socket).and_return multicast_searcher
+    it "returns an empty Array when nothing answers" do
+      allow(IO).to receive(:select).and_return(nil)
+
+      expect(subject.search).to eql []
     end
 
-    context "reactor is already running" do
-      it "returns a WSDiscovery::Searcher" do
-        allow(EM).to receive(:reactor_running?).and_return true
-        expect(subject.search).to eql multicast_searcher
+    # The window is the whole point of the call: a probe has no "last" response, so
+    # the only thing that ends the search is the deadline.
+    it "waits response_wait_time for responses" do
+      allow(IO).to receive(:select) do |_read, _write, _error, timeout|
+        expect(timeout).to be <= 0.25
+        expect(timeout).to be > 0
+        nil
       end
+
+      subject.search(response_wait_time: 0.25)
     end
 
-    context "reactor is not already running" do
-      it "returns an Array of responses" do
-        allow(EM).to receive(:add_shutdown_hook).and_yield
-        expect(subject.search).to eql %w[one two]
-      end
+    # Without this, every scan on a long-lived process leaks a file descriptor --
+    # tetherbox re-scans continuously.
+    it "closes the socket even when a response blows up" do
+      allow(IO).to receive(:select).and_return([socket])
+      allow(searcher).to receive(:receive_response).and_raise(WSDiscovery::Error, 'bad xml')
 
-      it "opens a UDP socket on '0.0.0.0', port 0" do
-        allow(EM).to receive(:add_shutdown_hook)
-        expect(EM).to receive(:open_datagram_socket).with('0.0.0.0', 0,
-          WSDiscovery::Searcher, {})
-        subject.search
-      end
+      expect(searcher).to receive(:close)
+      expect { subject.search }.to raise_error(WSDiscovery::Error)
     end
   end
 end
-

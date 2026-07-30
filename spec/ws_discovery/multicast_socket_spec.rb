@@ -1,41 +1,31 @@
 require 'spec_helper'
-require 'ws_discovery/multicast_connection'
+require 'ws_discovery/multicast_socket'
 
-describe WSDiscovery::MulticastConnection do
-  around(:each) do |example|
-    EM.run do
-      example.run
-      EM.stop
-    end
-  end
+# Replaces multicast_connection_spec.rb. Same socket options, asserted against the
+# real UDPSocket the class now owns instead of against EventMachine's set_sock_opt.
+# The old #peer_info examples are gone with the method: recvfrom hands back the
+# sender, so there is no sockaddr to unpack by hand any more (and the example that
+# checked the port was a Fixnum had been failing since Ruby 3 removed the constant).
+describe WSDiscovery::MulticastSocket do
+  subject { WSDiscovery::MulticastSocket.new(1) }
 
-  subject { WSDiscovery::MulticastConnection.new(1) }
+  after { subject.close }
 
-  describe "#peer_info" do
-    before do
-      allow_any_instance_of(WSDiscovery::MulticastConnection).to receive(:setup_multicast_socket)
-      allow(subject).to receive_message_chain(:get_peername, :[], :unpack).and_return(%w(1234 1 2 3 4))
-    end
+  describe "#initialize" do
+    it "binds a UDP socket to an ephemeral port on 0.0.0.0" do
+      address = subject.socket.local_address
 
-    it "returns an Array with IP and port" do
-      expect(subject.send(:peer_info)).to eql ['1.2.3.4', 1234]
-    end
-
-    it "returns IP as a String" do
-      expect(subject.send(:peer_info).first).to be_a String
-    end
-
-    it "returns port as a Fixnum" do
-      expect(subject.send(:peer_info).last).to be_a Fixnum
+      expect(address.ip_address).to eql '0.0.0.0'
+      expect(address.ip_port).to be > 0
     end
   end
 
   describe "#setup_multicast_socket" do
     before do
-      allow_any_instance_of(WSDiscovery::MulticastConnection).to receive(:set_membership)
-      allow_any_instance_of(WSDiscovery::MulticastConnection).to receive(:switch_multicast_loop)
-      allow_any_instance_of(WSDiscovery::MulticastConnection).to receive(:set_multicast_ttl)
-      allow_any_instance_of(WSDiscovery::MulticastConnection).to receive(:set_ttl)
+      allow_any_instance_of(WSDiscovery::MulticastSocket).to receive(:set_membership)
+      allow_any_instance_of(WSDiscovery::MulticastSocket).to receive(:switch_multicast_loop)
+      allow_any_instance_of(WSDiscovery::MulticastSocket).to receive(:set_multicast_ttl)
+      allow_any_instance_of(WSDiscovery::MulticastSocket).to receive(:set_ttl)
     end
 
     it "adds 0.0.0.0 and 239.255.255.250 to the membership group" do
@@ -67,36 +57,32 @@ describe WSDiscovery::MulticastConnection do
   end
 
   describe "#switch_multicast_loop" do
-    before do
-      allow_any_instance_of(WSDiscovery::MulticastConnection).to receive(:setup_multicast_socket)
-    end
-
     it "passes '\\001' to the socket option call when param == :on" do
       expect(subject).to receive(:set_sock_opt).with(
-        0, Socket::IP_MULTICAST_LOOP, "\001"
+        Socket::IPPROTO_IP, Socket::IP_MULTICAST_LOOP, "\001"
       )
       subject.send(:switch_multicast_loop, :on)
     end
 
     it "passes '\\001' to the socket option call when param == '\\001'" do
       expect(subject).to receive(:set_sock_opt).with(
-        0, Socket::IP_MULTICAST_LOOP, "\001"
+        Socket::IPPROTO_IP, Socket::IP_MULTICAST_LOOP, "\001"
       )
-      subject.send(:switch_multicast_loop,"\001")
+      subject.send(:switch_multicast_loop, "\001")
     end
 
     it "passes '\\000' to the socket option call when param == :off" do
       expect(subject).to receive(:set_sock_opt).with(
-        0, Socket::IP_MULTICAST_LOOP, "\000"
+        Socket::IPPROTO_IP, Socket::IP_MULTICAST_LOOP, "\000"
       )
-      subject.send(:switch_multicast_loop,:off)
+      subject.send(:switch_multicast_loop, :off)
     end
 
     it "passes '\\000' to the socket option call when param == '\\000'" do
       expect(subject).to receive(:set_sock_opt).with(
-        0, Socket::IP_MULTICAST_LOOP, "\000"
+        Socket::IPPROTO_IP, Socket::IP_MULTICAST_LOOP, "\000"
       )
-      subject.send(:switch_multicast_loop,"\000")
+      subject.send(:switch_multicast_loop, "\000")
     end
 
     it "raises when not :on, :off, '\\000', or '\\001'" do
@@ -104,5 +90,13 @@ describe WSDiscovery::MulticastConnection do
         to raise_error(WSDiscovery::Error)
     end
   end
-end
 
+  describe "#close" do
+    it "closes the socket, and tolerates being called twice" do
+      subject.close
+      expect(subject.socket).to be_closed
+
+      expect { subject.close }.to_not raise_error
+    end
+  end
+end

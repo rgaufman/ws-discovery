@@ -17,7 +17,6 @@ Gem::Specification.new do |s|
   s.require_paths = ["lib"]
 
   s.add_dependency("builder")
-  s.add_dependency("eventmachine")
   s.add_dependency("semantic_logger")
   s.add_dependency("nokogiri")
   s.add_dependency("nori", '>=2.0.0')

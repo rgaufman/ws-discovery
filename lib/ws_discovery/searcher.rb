@@ -1,14 +1,16 @@
-require_relative 'multicast_connection'
+require_relative 'multicast_socket'
 require_relative 'response'
 require 'semantic_logger'
 require 'builder'
 require 'securerandom'
 
-class WSDiscovery::Searcher < WSDiscovery::MulticastConnection
+class WSDiscovery::Searcher < WSDiscovery::MulticastSocket
   include SemanticLogger::Loggable
-  # @return [EventMachine::Channel] Provides subscribers with responses from
-  #   their search request.
-  attr_reader :discovery_responses
+
+  # Largest payload a UDP datagram can carry (65535 less the 8-byte UDP and 20-byte
+  # IP headers). ProbeMatches are far smaller, but reading the maximum means a
+  # chatty device's response can never be silently truncated.
+  MAX_DATAGRAM_SIZE = 65_507
 
   # @param [Hash] options The options for the probe.
   # @option options [Hash<String>] :env_namespaces Additional envelope namespaces.
@@ -16,7 +18,7 @@ class WSDiscovery::Searcher < WSDiscovery::MulticastConnection
   # @option options [String] :types Types.
   # @option options [Hash<String>] :scope_attributes Scope attributes.
   # @option options [String] :scopes Scopes.
-  # @option options [Fixnum] :ttl TTL for the probe.
+  # @option options [Integer] :ttl TTL for the probe.
   def initialize(options={})
     options[:ttl] ||= TTL
 
@@ -25,21 +27,43 @@ class WSDiscovery::Searcher < WSDiscovery::MulticastConnection
     super options[:ttl]
   end
 
-  # This is the callback called by EventMachine when it receives data on the
-  # socket that's been opened for this connection.  In this case, the method
-  # parses the probe matches into WSDiscovery::Responses and adds them to the
-  # appropriate EventMachine::Channel (provided as accessor methods).  This
-  # effectively means that in each Channel, you get a WSDiscovery::Response
-  # for each response that comes in on the socket.
+  # Sends the probe that was built during init.  Logs what was sent if the
+  # send was successful.
   #
-  # @param [String] response The data received on this connection's socket.
-  def receive_data(response)
-    ip, port = peer_info
-    logger.info "<#{self.class}> Response from #{ip}:#{port}:\n#{response}\n"
-    parsed_response = parse(response)
+  # Was #post_init, which EventMachine called for us once the socket was up.
+  #
+  # @return [Integer] Bytes sent.
+  def send_probe
+    bytes = socket.send(@search, 0, MULTICAST_IP, MULTICAST_PORT)
+    logger.info("Sent datagram search:\n#{@search}") if bytes > 0
+
+    bytes
+  end
+
+  # Reads ONE pending datagram and parses it into a WSDiscovery::Response, with the
+  # sender's IP and port merged into the hash -- that source address is the
+  # authoritative one for the device, more trustworthy than anything it advertises
+  # inside the XML.
+  #
+  # Was #receive_data, which EventMachine called with the payload already read and
+  # the peer resolved via #peer_info. recvfrom returns both, so the peer no longer
+  # has to be unpacked out of a sockaddr by hand.
+  #
+  # The caller must establish that the socket is readable first (WSDiscovery.search
+  # uses IO.select) -- with no reactor handing out readability callbacks, this
+  # blocks until a datagram arrives.
+  #
+  # @return [WSDiscovery::Response] The parsed response.
+  def receive_response
+    data, sender = socket.recvfrom(MAX_DATAGRAM_SIZE)
+    port, ip = sender[1], sender[3]
+
+    logger.info "<#{self.class}> Response from #{ip}:#{port}:\n#{data}\n"
+    parsed_response = parse(data)
     parsed_response.to_hash[:ip] = ip
     parsed_response.to_hash[:port] = port
-    @discovery_responses << parsed_response
+
+    parsed_response
   end
 
   # Converts the headers to a set of key-value pairs.
@@ -48,14 +72,6 @@ class WSDiscovery::Searcher < WSDiscovery::MulticastConnection
   # @return [WSDiscovery::Response] The converted data.
   def parse(data)
     WSDiscovery::Response.new(data)
-  end
-
-  # Sends the probe that was built during init.  Logs what was sent if the
-  # send was successful.
-  def post_init
-    if send_datagram(@search, MULTICAST_IP, MULTICAST_PORT) > 0
-      logger.info("Sent datagram search:\n#{@search}")
-    end
   end
 
   # Probe for target services supporting WS-Discovery.

@@ -2,76 +2,64 @@ require 'spec_helper'
 require 'ws_discovery/searcher'
 
 describe WSDiscovery::Searcher do
-  let(:default_probe) do
-    "<s:Envelope xmlns:a=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\" " +
-      "xmlns:d=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\" xmlns:s=\"h" +
-      "ttp://www.w3.org/2003/05/soap-envelope\"><s:Header><a:Action>http://sch" +
-      "emas.xmlsoap.org/ws/2005/04/discovery/Probe</a:Action><a:MessageID>uuid" +
-      ":a-uuid</a:MessageID><a:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery" +
-      "</a:To></s:Header><s:Body><d:Probe><d:Types/><d:Scopes/></d:Probe></s:B" +
-      "ody></s:Envelope>"
-  end
+  # The MessageID is a fresh SecureRandom.uuid per probe, so it is stubbed to keep
+  # the expected XML byte-exact. (This spec used to stub UUID.generate, which has
+  # not existed since the uuid gem was dropped for SecureRandom -- every example in
+  # here was erroring on `uninitialized constant UUID` before this rewrite.)
+  before { allow(SecureRandom).to receive(:uuid).and_return('a-uuid') }
 
-  around(:each) do |example|
-    EM.run do
-      example.run
-      EM.stop
-    end
-  end
+  subject { WSDiscovery::Searcher.new(ttl: 1) }
 
-  before do
-    allow_any_instance_of(WSDiscovery::MulticastConnection).to receive(:setup_multicast_socket)
-    allow(UUID).to receive(:generate).and_return('a-uuid')
-  end
-
-  subject do
-    WSDiscovery::Searcher.new(1)
-  end
+  after { subject.close }
 
   describe "#initialize" do
     it "does a #probe" do
-      expect_any_instance_of(WSDiscovery::Searcher).to receive(:probe)
+      expect_any_instance_of(WSDiscovery::Searcher).to receive(:probe).and_return('<probe/>')
       subject
     end
   end
 
-  describe "#receive_data" do
-    let(:parsed_response) do
-      double 'parsed response'
+  describe "#send_probe" do
+    it "sends the probe as a datagram over 239.255.255.250:3702" do
+      expect(subject.socket).to receive(:send).
+        with(instance_of(String), 0, '239.255.255.250', 3702).
+        and_return 42
+
+      expect(subject.send_probe).to eql 42
+    end
+  end
+
+  describe "#receive_response" do
+    # ["AF_INET", port, hostname, numeric_ip] -- what UDPSocket#recvfrom returns as
+    # its second element. The numeric IP is the device's authoritative address.
+    let(:sender) { ['AF_INET', 4567, 'device.local', '1.2.3.4'] }
+
+    before do
+      allow(subject.socket).to receive(:recvfrom).and_return([ProbeMatchFixture::XML, sender])
     end
 
-    it "takes a response and adds it to the list of responses" do
-      response = double 'response'
-      allow(subject).to receive(:peer_info).and_return(['0.0.0.0', 4567])
+    it "parses the datagram into a WSDiscovery::Response" do
+      expect(subject).to receive(:parse).with(ProbeMatchFixture::XML).and_call_original
 
-      expect(subject).to receive(:parse).with(response).exactly(1).times.
-        and_return(parsed_response)
-      expect(subject.instance_variable_get(:@discovery_responses)).to receive(:<<).
-        with(parsed_response)
+      response = subject.receive_response
 
-      subject.receive_data(response)
+      expect(response).to be_a WSDiscovery::Response
+      expect(response.to_hash.dig(:probe_matches, :probe_match, :x_addrs)).
+        to eql 'http://10.221.222.74/onvif/device_service'
+    end
+
+    it "records the sender's IP and port on the response" do
+      hash = subject.receive_response.to_hash
+
+      expect(hash[:ip]).to eql '1.2.3.4'
+      expect(hash[:port]).to eql 4567
     end
   end
 
   describe "#parse" do
-    before do
-      allow_any_instance_of(WSDiscovery::MulticastConnection).to receive(:setup_multicast_socket)
-    end
-
     it "turns probe matches into WSDiscovery::Responses" do
       result = subject.parse "<Envelope />"
       expect(result).to be_a WSDiscovery::Response
-    end
-  end
-
-  describe "#post_init" do
-    before { allow_any_instance_of(WSDiscovery::Searcher).to receive(:m_search).and_return("hi") }
-
-    it "sends a probe as a datagram over 239.255.255.250:3702" do
-      expect(subject).to receive(:send_datagram).
-        with(default_probe, '239.255.255.250', 3702).
-        and_return 0
-      subject.post_init
     end
   end
 
@@ -91,4 +79,3 @@ mitter</d:Types><d:Scopes/></d:Probe></s:Body></s:Envelope>
     end
   end
 end
-
