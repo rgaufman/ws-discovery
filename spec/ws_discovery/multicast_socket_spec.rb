@@ -28,20 +28,13 @@ describe WSDiscovery::MulticastSocket do
       allow_any_instance_of(WSDiscovery::MulticastSocket).to receive(:set_ttl)
     end
 
-    it "adds 0.0.0.0 and 239.255.255.250 to the membership group" do
+    it "joins the group on every interface and sets both TTLs to the given value" do
       expect(subject).to receive(:set_membership).with(
         IPAddr.new('239.255.255.250').hton + IPAddr.new('0.0.0.0').hton
       )
-      subject.send(:setup_multicast_socket)
-    end
-
-    it "sets multicast TTL to 1" do
       expect(subject).to receive(:set_multicast_ttl).with(1)
-      subject.send(:setup_multicast_socket)
-    end
-
-    it "sets TTL to 1" do
       expect(subject).to receive(:set_ttl).with(1)
+
       subject.send(:setup_multicast_socket)
     end
 
@@ -57,32 +50,15 @@ describe WSDiscovery::MulticastSocket do
   end
 
   describe "#switch_multicast_loop" do
-    it "passes '\\001' to the socket option call when param == :on" do
-      expect(subject).to receive(:set_sock_opt).with(
-        Socket::IPPROTO_IP, Socket::IP_MULTICAST_LOOP, "\001"
-      )
-      subject.send(:switch_multicast_loop, :on)
-    end
-
-    it "passes '\\001' to the socket option call when param == '\\001'" do
-      expect(subject).to receive(:set_sock_opt).with(
-        Socket::IPPROTO_IP, Socket::IP_MULTICAST_LOOP, "\001"
-      )
-      subject.send(:switch_multicast_loop, "\001")
-    end
-
-    it "passes '\\000' to the socket option call when param == :off" do
-      expect(subject).to receive(:set_sock_opt).with(
-        Socket::IPPROTO_IP, Socket::IP_MULTICAST_LOOP, "\000"
-      )
-      subject.send(:switch_multicast_loop, :off)
-    end
-
-    it "passes '\\000' to the socket option call when param == '\\000'" do
-      expect(subject).to receive(:set_sock_opt).with(
-        Socket::IPPROTO_IP, Socket::IP_MULTICAST_LOOP, "\000"
-      )
-      subject.send(:switch_multicast_loop, "\000")
+    # Both spellings of each state are accepted (the symbol, and the raw byte the option
+    # takes), so all four map to one of two bytes.
+    { :on => "\001", "\001" => "\001", :off => "\000", "\000" => "\000" }.each do |param, byte|
+      it "passes #{byte.inspect} to setsockopt when param == #{param.inspect}" do
+        expect(subject.socket).to receive(:setsockopt).with(
+          Socket::IPPROTO_IP, Socket::IP_MULTICAST_LOOP, byte
+        )
+        subject.send(:switch_multicast_loop, param)
+      end
     end
 
     it "raises when not :on, :off, '\\000', or '\\001'" do

@@ -51,17 +51,17 @@ module WSDiscovery
     # @param [String] membership The network byte ordered String that represents
     #   the IP(s) that should join the membership group.
     def set_membership(membership)
-      set_sock_opt(Socket::IPPROTO_IP, Socket::IP_ADD_MEMBERSHIP, membership)
+      @socket.setsockopt(Socket::IPPROTO_IP, Socket::IP_ADD_MEMBERSHIP, membership)
     end
 
     # @param [Integer] ttl TTL to set IP_MULTICAST_TTL to.
     def set_multicast_ttl(ttl)
-      set_sock_opt(Socket::IPPROTO_IP, Socket::IP_MULTICAST_TTL, [ttl].pack('i'))
+      @socket.setsockopt(Socket::IPPROTO_IP, Socket::IP_MULTICAST_TTL, [ttl].pack('i'))
     end
 
     # @param [Integer] ttl TTL to set IP_TTL to.
     def set_ttl(ttl)
-      set_sock_opt(Socket::IPPROTO_IP, Socket::IP_TTL, [ttl].pack('i'))
+      @socket.setsockopt(Socket::IPPROTO_IP, Socket::IP_TTL, [ttl].pack('i'))
     end
 
     # @param [Symbol] on_off Turn on/off multicast looping. Supply :on or :off.
@@ -76,13 +76,7 @@ module WSDiscovery
         raise WSDiscovery::Error, "Can't switch IP_MULTICAST_LOOP to '#{on_off}'"
       end
 
-      set_sock_opt(Socket::IPPROTO_IP, Socket::IP_MULTICAST_LOOP, hex_value)
-    end
-
-    # Kept as its own method, with EventMachine's name and argument order, so the
-    # option-setting methods above read exactly as they did under the reactor.
-    def set_sock_opt(level, option, value)
-      @socket.setsockopt(level, option, value)
+      @socket.setsockopt(Socket::IPPROTO_IP, Socket::IP_MULTICAST_LOOP, hex_value)
     end
   end
 end

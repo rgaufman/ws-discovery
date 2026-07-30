@@ -35,13 +35,13 @@ describe WSDiscovery::Response do
 
   subject { WSDiscovery::Response.new(probe_response) }
 
-  describe "#[]" do
+  # #[], #body and #to_hash are three names for the same read, so they are asserted
+  # together rather than in three examples that could pass individually while disagreeing.
+  describe "#[], #body, #to_hash" do
     it "should return the SOAP response body as a Hash" do
       expect(subject[:probe_matches]).to eql probe_body_hash[:probe_matches]
-    end
-
-    it "should throw an exception when the response body isn't parsable" do
-      expect { WSDiscovery::Response.new('').body }.to raise_error WSDiscovery::Error
+      expect(subject.body[:probe_matches]).to eql probe_body_hash[:probe_matches]
+      expect(subject.to_hash[:probe_matches]).to eql probe_body_hash[:probe_matches]
     end
   end
 
@@ -49,17 +49,12 @@ describe WSDiscovery::Response do
     it "should return the SOAP response header as a Hash" do
       expect(subject.header[:app_sequence]).to eql probe_header_hash[:app_sequence]
     end
-
-    it "should throw an exception when the response header isn't parsable" do
-      expect { WSDiscovery::Response.new('').header }.to raise_error WSDiscovery::Error
-    end
   end
 
-  %w(body to_hash).each do |method|
-    describe "##{method}" do
-      it "should return the SOAP response body as a Hash" do
-        expect(subject.send(method)[:probe_matches]).to eql probe_body_hash[:probe_matches]
-      end
+  describe "unparsable responses" do
+    it "should throw an exception from both the body and the header" do
+      expect { WSDiscovery::Response.new('').body }.to raise_error WSDiscovery::Error
+      expect { WSDiscovery::Response.new('').header }.to raise_error WSDiscovery::Error
     end
   end
 
